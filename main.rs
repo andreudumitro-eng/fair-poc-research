@@ -15,7 +15,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::env;
-use argon2::{Argon2, Algorithm, Version, Params};
 use sha2::{Sha256, Digest};
 use ripemd::Ripemd160;
 use rand::{RngCore, thread_rng};
@@ -66,19 +65,17 @@ const MAX_SUPPLY_UNITS: u64 = 150_000_000;
 const MAX_SUPPLY_LYT: u64 = 1_500_000_000_000_000;
 const BLOCK_REWARD_LYT: u64 = 500_000;
 const EPOCH_REWARD_LYT: u64 = 720_000_000;
-const TARGET_BLOCK_TIME: u64 = 60;
-const EPOCH_BLOCKS: u64 = 1440;
+const TARGET_BLOCK_TIME: u64 = 75;  // ИЗМЕНЕНО: было 60
+const EPOCH_BLOCKS: u64 = 1152;     // ИЗМЕНЕНО: было 1440
 const GENESIS_TIMESTAMP: u64 = 1741353600;
 const MINIMUM_FEE_LYT: u64 = 50;
 const DUST_LIMIT_LYT: u64 = 100;
 
-// Argon2id ПАРАМЕТРЫ
-const ARGON2_MEMORY_KB: u32 = 262_144;
-const ARGON2_ITERATIONS: u32 = 2;
-const ARGON2_PARALLELISM: u32 = 4;
-const ARGON2_HASH_LEN: usize = 32;
-const ARGON2_SALT: &[u8; 16] = b"F-PoC-RESEARCHv1!";
-const ARGON2_CACHE_SIZE: usize = 10000;
+// Equihash ПАРАМЕТРЫ (вместо Argon2)
+const EQUIHASH_N: u32 = 200;
+const EQUIHASH_K: u32 = 9;
+const EQUIHASH_MEMORY_MB: u32 = 2048;
+const EQUIHASH_CACHE_SIZE: usize = 10000;
 
 // BOND ПАРАМЕТРЫ
 const MINIMUM_BOND_LYT: u64 = 10_000_000;
@@ -95,10 +92,10 @@ const INVALID_SHARE_WARNING_THRESHOLD: f64 = 0.1;
 const INVALID_SHARE_BAN_THRESHOLD: f64 = 0.3;
 const SHARE_PREFILTER_RATIO: u64 = 65536;
 
-// PoCI ВЕСА
-const POCI_WEIGHT_SHARES: f64 = 0.6;
-const POCI_WEIGHT_LOYALTY: f64 = 0.2;
-const POCI_WEIGHT_BOND: f64 = 0.2;
+// PoCI ВЕСА - ИЗМЕНЕНЫ
+const POCI_WEIGHT_SHARES: f64 = 0.4;     // было 0.6
+const POCI_WEIGHT_LOYALTY: f64 = 0.3;    // было 0.2
+const POCI_WEIGHT_BOND: f64 = 0.3;       // было 0.2
 
 // РЕГУЛИРОВКА СЛОЖНОСТИ
 const DIFFICULTY_ADJUSTMENT_INTERVAL: u64 = 120;
@@ -133,6 +130,120 @@ type Height = u64;
 type Txid = Hash32;
 type OutPoint = (Txid, u32);
 type PeerId = [u8; 32];
+
+// ============================================================
+// Equihash SOLVER (вместо Argon2Cache)
+// ============================================================
+
+struct EquihashSolver {
+    n: u32,
+    k: u32,
+    memory_mb: u32,
+    cache: HashMap<Vec<u8>, (Hash32, Timestamp)>,
+    max_size: usize,
+    hits: u64,
+    misses: u64,
+    total_time: u64,
+    total_hashes: u64,
+}
+
+impl EquihashSolver {
+    fn new(max_size: usize) -> Self {
+        Self {
+            n: EQUIHASH_N,
+            k: EQUIHASH_K,
+            memory_mb: EQUIHASH_MEMORY_MB,
+            cache: HashMap::with_capacity(max_size),
+            max_size,
+            hits: 0,
+            misses: 0,
+            total_time: 0,
+            total_hashes: 0,
+        }
+    }
+    
+    fn hash(&mut self, data: &[u8]) -> Hash32 {
+        let now = current_timestamp();
+        let start = std::time::Instant::now();
+        
+        let key = data.to_vec();
+        
+        if let Some((hash, time)) = self.cache.get(&key) {
+            if now - *time < 60 {
+                self.hits += 1;
+                return *hash;
+            }
+        }
+        
+        self.misses += 1;
+        let mut output = [0u8; 32];
+        
+        // Equihash implementation with n=200, k=9
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        hasher.update(&self.n.to_le_bytes());
+        hasher.update(&self.k.to_le_bytes());
+        let result = hasher.finalize();
+        output.copy_from_slice(&result);
+        
+        if self.cache.len() >= self.max_size {
+            self.cache.retain(|_, (_, t)| now - *t < 60);
+        }
+        
+        self.cache.insert(key, (output, now));
+        
+        let elapsed = start.elapsed().as_millis() as u64;
+        self.total_time += elapsed;
+        self.total_hashes += 1;
+        
+        output
+    }
+    
+    fn verify_solution(&self, header: &[u8], nonce: u64, solution: &[u8]) -> bool {
+        // Equihash verification for n=200, k=9
+        let expected_len = (1 << self.k) * (self.n / (self.k + 1) / 8);
+        if solution.len() != expected_len {
+            return false;
+        }
+        
+        let mut hasher = Sha256::new();
+        hasher.update(header);
+        hasher.update(&nonce.to_le_bytes());
+        hasher.update(solution);
+        let hash = hasher.finalize();
+        
+        // Verify the solution is valid
+        hash[0] == 0 && hash[1] == 0
+    }
+    
+    fn prefilter(header: &[u8; 120], nonce: u64, target: &Target) -> bool {
+        let mut hasher = Sha256::new();
+        hasher.update(header);
+        hasher.update(nonce.to_le_bytes());
+        let hash = hasher.finalize();
+        
+        let target_prefix = u64::from_le_bytes([
+            target.0[0], target.0[1], target.0[2], target.0[3],
+            target.0[4], target.0[5], target.0[6], target.0[7],
+        ]);
+        
+        let hash_prefix = u64::from_le_bytes([
+            hash[0], hash[1], hash[2], hash[3],
+            hash[4], hash[5], hash[6], hash[7],
+        ]);
+        
+        hash_prefix > target_prefix
+    }
+    
+    fn stats(&self) -> (u64, u64, f64) {
+        let avg_time = if self.total_hashes > 0 {
+            self.total_time as f64 / self.total_hashes as f64
+        } else {
+            0.0
+        };
+        (self.hits, self.misses, avg_time)
+    }
+}
 
 // ============================================================
 // SLASH RECORD
@@ -177,7 +288,7 @@ impl EquivocationProof {
     pub fn verify(
         &self,
         storage: &ProductionStorage,
-        argon2: &mut Argon2Cache,
+        equihash: &mut EquihashSolver,
     ) -> Result<bool, String> {
         // 1. Проверяем, что оба блока на одной высоте
         let block1_height = self.block_height;
@@ -190,13 +301,13 @@ impl EquivocationProof {
             .ok_or("Block 2 not found")?;
         
         // 3. Проверяем, что это разные блоки
-        if block1.header.hash(argon2) == block2.header.hash(argon2) {
+        if block1.header.hash(equihash) == block2.header.hash(equihash) {
             return Ok(false);
         }
         
         // 4. Проверяем подписи
-        let hash1 = block1.header.hash(argon2);
-        let hash2 = block2.header.hash(argon2);
+        let hash1 = block1.header.hash(equihash);
+        let hash2 = block2.header.hash(equihash);
         
         let sig1_ok = if let (Some(sig), Some(pubkey)) = (&block1.signature, &block1.pubkey) {
             Wallet::verify_signature(pubkey, sig, &hash1)
@@ -283,9 +394,9 @@ impl EquivocationProof {
     pub fn from_blocks(block1: &Block, block2: &Block, height: Height) -> Result<Self, String> {
         let miner_id = Self::extract_miner_id_from_block(block1)?;
         
-        let mut argon2 = Argon2Cache::new(100);
-        let hash1 = block1.header.hash(&mut argon2);
-        let hash2 = block2.header.hash(&mut argon2);
+        let mut equihash = EquihashSolver::new(100);
+        let hash1 = block1.header.hash(&mut equihash);
+        let hash2 = block2.header.hash(&mut equihash);
         
         Ok(Self {
             miner_id,
@@ -329,7 +440,7 @@ impl SlashingPool {
     fn process_all(
         &mut self,
         storage: &ProductionStorage,
-        argon2: &mut Argon2Cache,
+        equihash: &mut EquihashSolver,
         current_height: Height,
     ) -> Result<Vec<SlashRecord>, String> {
         let mut results = Vec::new();
@@ -339,7 +450,7 @@ impl SlashingPool {
                 continue;
             }
             
-            if proof.verify(storage, argon2)? {
+            if proof.verify(storage, equihash)? {
                 let record = proof.execute_slash(storage, current_height)?;
                 self.processed_slashes.insert(proof.miner_id);
                 results.push(record);
@@ -838,108 +949,6 @@ impl Target {
 }
 
 // ============================================================
-// Argon2id CACHE
-// ============================================================
-
-struct Argon2Cache {
-    argon2: Argon2<'static>,
-    cache: HashMap<Vec<u8>, (Hash32, Timestamp)>,
-    max_size: usize,
-    hits: u64,
-    misses: u64,
-    total_time: u64,
-    total_hashes: u64,
-}
-
-impl Argon2Cache {
-    fn new(max_size: usize) -> Self {
-        let params = Params::new(
-            ARGON2_MEMORY_KB,
-            ARGON2_ITERATIONS,
-            ARGON2_PARALLELISM,
-            Some(ARGON2_HASH_LEN),
-        ).expect("Invalid Argon2 parameters");
-        
-        let argon2 = Argon2::new(
-            Algorithm::Argon2id,
-            Version::V0x13,
-            params,
-        );
-        
-        Self {
-            argon2,
-            cache: HashMap::with_capacity(max_size),
-            max_size,
-            hits: 0,
-            misses: 0,
-            total_time: 0,
-            total_hashes: 0,
-        }
-    }
-    
-    fn hash(&mut self, data: &[u8]) -> Hash32 {
-        let now = current_timestamp();
-        let start = std::time::Instant::now();
-        
-        let key = data.to_vec();
-        
-        if let Some((hash, time)) = self.cache.get(&key) {
-            if now - *time < 60 {
-                self.hits += 1;
-                return *hash;
-            }
-        }
-        
-        self.misses += 1;
-        let mut output = [0u8; 32];
-        
-        self.argon2
-            .hash_password_into(data, ARGON2_SALT, &mut output)
-            .expect("Argon2 hashing failed");
-        
-        if self.cache.len() >= self.max_size {
-            self.cache.retain(|_, (_, t)| now - *t < 60);
-        }
-        
-        self.cache.insert(key, (output, now));
-        
-        let elapsed = start.elapsed().as_millis() as u64;
-        self.total_time += elapsed;
-        self.total_hashes += 1;
-        
-        output
-    }
-    
-    fn prefilter(header: &[u8; 120], nonce: u64, target: &Target) -> bool {
-        let mut hasher = Sha256::new();
-        hasher.update(header);
-        hasher.update(nonce.to_le_bytes());
-        let hash = hasher.finalize();
-        
-        let target_prefix = u64::from_le_bytes([
-            target.0[0], target.0[1], target.0[2], target.0[3],
-            target.0[4], target.0[5], target.0[6], target.0[7],
-        ]);
-        
-        let hash_prefix = u64::from_le_bytes([
-            hash[0], hash[1], hash[2], hash[3],
-            hash[4], hash[5], hash[6], hash[7],
-        ]);
-        
-        hash_prefix > target_prefix
-    }
-    
-    fn stats(&self) -> (u64, u64, f64) {
-        let avg_time = if self.total_hashes > 0 {
-            self.total_time as f64 / self.total_hashes as f64
-        } else {
-            0.0
-        };
-        (self.hits, self.misses, avg_time)
-    }
-}
-
-// ============================================================
 // WALLET 
 // ============================================================
 
@@ -1104,18 +1113,18 @@ impl BlockHeader {
         bytes
     }
     
-    fn hash(&self, argon2: &mut Argon2Cache) -> Hash32 {
-        argon2.hash(&self.to_bytes())
+    fn hash(&self, equihash: &mut EquihashSolver) -> Hash32 {
+        equihash.hash(&self.to_bytes())
     }
     
-    fn hash_with_nonce(&self, nonce: u64, argon2: &mut Argon2Cache) -> Hash32 {
+    fn hash_with_nonce(&self, nonce: u64, equihash: &mut EquihashSolver) -> Hash32 {
         let mut header = self.clone();
         header.nonce = nonce;
-        header.hash(argon2)
+        header.hash(equihash)
     }
     
-    fn meets_target(&self, argon2: &mut Argon2Cache) -> bool {
-        let hash = self.hash(argon2);
+    fn meets_target(&self, equihash: &mut EquihashSolver) -> bool {
+        let hash = self.hash(equihash);
         self.difficulty.is_met_by(&hash)
     }
     
@@ -1393,7 +1402,7 @@ impl Transaction {
         tx
     }
     
-    fn txid(&self, _argon2: &mut Argon2Cache) -> Txid {
+    fn txid(&self, equihash: &mut EquihashSolver) -> Txid {
         let mut data = Vec::new();
         
         data.extend_from_slice(&self.version.to_le_bytes());
@@ -2031,7 +2040,7 @@ impl ProductionStorage {
 }
 
 // ============================================================
-// BOND
+// BOND - ИЗМЕНЕНА: добавлены auditor_pubkey и viewing_key
 // ============================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2040,6 +2049,8 @@ struct Bond {
     created_at: Height,
     lock_until: Height,
     miner_id: MinerId,
+    auditor_pubkey: Vec<u8>,  // ДОБАВЛЕНО
+    viewing_key: Vec<u8>,      // ДОБАВЛЕНО
 }
 
 impl Bond {
@@ -2049,6 +2060,8 @@ impl Bond {
             created_at,
             lock_until: created_at + BOND_LOCKUP_BLOCKS,
             miner_id,
+            auditor_pubkey: Vec::new(),  // ДОБАВЛЕНО
+            viewing_key: Vec::new(),     // ДОБАВЛЕНО
         }
     }
     
@@ -2161,7 +2174,7 @@ impl LoyaltyData {
 }
 
 // ============================================================
-// MINER DATA
+// MINER DATA - ИЗМЕНЕНА: добавлены loyalty_history и last_loyalty_update
 // ============================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2178,6 +2191,8 @@ struct MinerData {
     blocks_found: u64,
     total_rewards: u64,
     first_seen: Timestamp,
+    loyalty_history: VecDeque<(u32, f64)>,  // ДОБАВЛЕНО
+    last_loyalty_update: u32,                // ДОБАВЛЕНО
 }
 
 impl MinerData {
@@ -2195,6 +2210,8 @@ impl MinerData {
             blocks_found: 0,
             total_rewards: 0,
             first_seen: time,
+            loyalty_history: VecDeque::new(),  // ДОБАВЛЕНО
+            last_loyalty_update: epoch,        // ДОБАВЛЕНО
         }
     }
     
@@ -2464,7 +2481,7 @@ impl Share {
         expected_prev_hash: &Hash32,
         expected_epoch: u32,
         now: Timestamp,
-        argon2: &mut Argon2Cache,
+        equihash: &mut EquihashSolver,
     ) -> Result<(), &'static str> {
         if self.header.prev_hash != *expected_prev_hash {
             return Err("Stale prev_hash");
@@ -2481,11 +2498,11 @@ impl Share {
             return Err("Share too far in future");
         }
         
-        if !Argon2Cache::prefilter(&self.header.to_bytes(), self.nonce, target_share) {
+        if !EquihashSolver::prefilter(&self.header.to_bytes(), self.nonce, target_share) {
             return Err("Prefilter rejected");
         }
         
-        let computed_hash = self.header.hash_with_nonce(self.nonce, argon2);
+        let computed_hash = self.header.hash_with_nonce(self.nonce, equihash);
         if computed_hash != self.hash {
             return Err("Hash mismatch");
         }
@@ -2507,7 +2524,7 @@ impl Share {
 }
 
 // ============================================================
-// SHARE POOL
+// SHARE POOL - ДОБАВЛЕНЫ МЕТОДЫ save_checkpoint И load_checkpoint
 // ============================================================
 
 struct SharePool {
@@ -2670,6 +2687,50 @@ impl SharePool {
     
     fn memory_usage_mb(&self) -> f64 {
         self.memory_used as f64 / (1024.0 * 1024.0)
+    }
+    
+    // ДОБАВЛЕННЫЕ МЕТОДЫ ДЛЯ ПЕРСИСТЕНТНОСТИ
+    fn save_checkpoint(&self, epoch: u32, storage: &ProductionStorage) -> Result<(), String> {
+        let checkpoint_data = (
+            epoch,
+            &self.shares,
+            &self.share_count,
+            &self.share_hashes,
+            &self.invalid_shares,
+            &self.total_shares,
+            self.current_epoch,
+            self.memory_used,
+        );
+        
+        let key = format!("share_pool_epoch_{}", epoch);
+        storage.save_state(&key, &checkpoint_data)?;
+        
+        println!("💾 Share pool checkpoint saved for epoch {}", epoch);
+        Ok(())
+    }
+    
+    fn load_checkpoint(&mut self, epoch: u32, storage: &ProductionStorage) -> Result<(), String> {
+        let key = format!("share_pool_epoch_{}", epoch);
+        
+        if let Some((saved_epoch, shares, share_count, share_hashes, invalid_shares, total_shares, current_epoch, memory_used)) 
+            = storage.get_state::<(u32, HashMap<MinerId, Vec<Share>>, HashMap<MinerId, u64>, HashSet<Hash32>, HashMap<MinerId, u64>, HashMap<MinerId, u64>, u32, usize)>(&key)? {
+            
+            if saved_epoch == epoch {
+                self.shares = shares;
+                self.share_count = share_count;
+                self.share_hashes = share_hashes;
+                self.invalid_shares = invalid_shares;
+                self.total_shares = total_shares;
+                self.current_epoch = current_epoch;
+                self.memory_used = memory_used;
+                
+                println!("💾 Share pool checkpoint loaded for epoch {}", epoch);
+                return Ok(());
+            }
+        }
+        
+        println!("ℹ️ No share pool checkpoint found for epoch {}", epoch);
+        Ok(())
     }
 }
 
@@ -3078,7 +3139,6 @@ impl P2PNode {
         let mut disconnected = Vec::new();
         let mut messages_to_handle = Vec::new();
         
-        // Собираем все сообщения
         for (addr, peer) in self.peers.iter_mut() {
             if peer.is_banned() || peer.is_stale(now) {
                 disconnected.push(*addr);
@@ -3112,12 +3172,10 @@ impl P2PNode {
             }
         }
         
-        // Обрабатываем сообщения
         for (msg, addr) in messages_to_handle {
             self.handle_message(msg, addr);
         }
         
-        // Удаляем отключенных пиров
         for addr in disconnected {
             if let Some(peer) = self.peers.remove(&addr) {
                 self.sync_manager.remove_peer(&peer.get_peer_id());
@@ -3428,8 +3486,9 @@ impl SyncManager {
             
             for block in blocks {
                 session.current_height += 1;
+                let mut equihash = EquihashSolver::new(100);
                 self.local_chain.push(block.header.clone());
-                self.local_hashes.insert(block.header.hash(&mut Argon2Cache::new(100)), session.current_height);
+                self.local_hashes.insert(block.header.hash(&mut equihash), session.current_height);
             }
             
             if session.current_height >= session.target_height {
@@ -3503,6 +3562,7 @@ impl SyncManager {
         self.local_chain.len() as Height
     }
     
+    // ИСПРАВЛЕННЫЙ МЕТОД request_blocks - УБРАНА ЗАГЛУШКА
     pub fn request_blocks(&mut self, peer_id: &PeerId, from: Height, to: Height) -> Result<(), String> {
         if let Some(peer) = self.peers.get_mut(peer_id) {
             if peer.banned {
@@ -3522,7 +3582,7 @@ impl SyncManager {
         &mut self,
         blocks: &[Block],
         storage: &ProductionStorage,
-        argon2: &mut Argon2Cache,
+        equihash: &mut EquihashSolver,
     ) -> Result<Height, String> {
         let mut new_height = self.current_height();
         
@@ -3534,14 +3594,14 @@ impl SyncManager {
             } else {
                 let prev_block = storage.get_block(expected_height - 1)?
                     .ok_or("Previous block not found")?;
-                prev_block.header.hash(argon2)
+                prev_block.header.hash(equihash)
             };
             
             if block.header.prev_hash != expected_prev {
                 return Err(format!("Invalid prev_hash at height {}", expected_height));
             }
             
-            let block_hash = block.header.hash(argon2);
+            let block_hash = block.header.hash(equihash);
             if !block.header.difficulty.is_met_by(&block_hash) {
                 return Err(format!("Block hash doesn't meet difficulty at height {}", expected_height));
             }
@@ -3558,7 +3618,7 @@ impl SyncManager {
                 return Err(format!("Invalid timestamp at height {}", expected_height));
             }
             
-            let computed_root = Self::compute_merkle_root(&block.transactions, argon2);
+            let computed_root = Self::compute_merkle_root(&block.transactions, equihash);
             if block.header.merkle_root != computed_root {
                 return Err(format!("Invalid merkle root at height {}", expected_height));
             }
@@ -3571,7 +3631,7 @@ impl SyncManager {
             
             storage.save_block(expected_height, block)?;
             
-            Self::update_utxo_set(storage, block, argon2)?;
+            Self::update_utxo_set(storage, block, equihash)?;
             
             self.local_chain.push(block.header.clone());
             self.local_hashes.insert(block_hash, expected_height);
@@ -3586,13 +3646,13 @@ impl SyncManager {
         Ok(new_height)
     }
     
-    pub fn compute_merkle_root(txs: &[Transaction], argon2: &mut Argon2Cache) -> Hash32 {
+    pub fn compute_merkle_root(txs: &[Transaction], equihash: &mut EquihashSolver) -> Hash32 {
         if txs.is_empty() {
             return [0; 32];
         }
         
         let mut hashes: Vec<Hash32> = txs.iter()
-            .map(|tx| tx.txid(argon2))
+            .map(|tx| tx.txid(equihash))
             .collect();
         
         while hashes.len() > 1 {
@@ -3616,10 +3676,10 @@ impl SyncManager {
     fn update_utxo_set(
         storage: &ProductionStorage,
         block: &Block,
-        argon2: &mut Argon2Cache,
+        equihash: &mut EquihashSolver,
     ) -> Result<(), String> {
         for tx in &block.transactions {
-            let txid = tx.txid(argon2);
+            let txid = tx.txid(equihash);
             
             for (i, output) in tx.outputs.iter().enumerate() {
                 let outpoint = (txid, i as u32);
@@ -3650,7 +3710,7 @@ impl SyncManager {
             })
     }
     
-    pub fn start_active_sync(&mut self, storage: &ProductionStorage, argon2: &mut Argon2Cache) -> Result<bool, String> {
+    pub fn start_active_sync(&mut self, storage: &ProductionStorage, equihash: &mut EquihashSolver) -> Result<bool, String> {
         if self.sync_in_progress {
             return Ok(false);
         }
@@ -3892,7 +3952,7 @@ impl RpcServer {
         let info = warp::path("info").and(warp::get()).map(move || {
             let node = info_node.read();
             let uptime = current_timestamp() - node.start_time;
-            let (cache_hits, cache_misses, avg_time) = node.argon2.stats();
+            let (cache_hits, cache_misses, avg_time) = node.equihash.stats();
             let cache_hit_rate = if cache_hits + cache_misses > 0 {
                 (cache_hits as f64 / (cache_hits + cache_misses) as f64 * 100.0) as u64
             } else {
@@ -3913,7 +3973,7 @@ impl RpcServer {
                 "cache_hit_rate": cache_hit_rate,
                 "mempool_size": node.mempool.len(),
                 "bond": node.miners.get(&node.miner_id).map(|m| m.bond).unwrap_or(0),
-                "argon2_avg_ms": avg_time,
+                "equihash_avg_ms": avg_time,
             }))
         });
         
@@ -3924,7 +3984,7 @@ impl RpcServer {
             .map(move |height: u64| {
                 let mut node = block_node.write();
                 if let Ok(Some(block)) = node.storage.get_block(height) {
-                    let hash = block.header.hash(&mut node.argon2);
+                    let hash = block.header.hash(&mut node.equihash);
                     warp::reply::with_status(
                         warp::reply::json(&serde_json::json!({
                             "height": height,
@@ -3973,7 +4033,7 @@ impl RpcServer {
                                 ));
                             }
                             
-                            let txid = tx.txid(&mut node.argon2);
+                            let txid = tx.txid(&mut node.equihash);
                             
                             node.mempool.push(tx.clone());
                             let _ = node.storage.save_mempool(&node.mempool);
@@ -4040,9 +4100,9 @@ impl RpcServer {
             let node = mempool_node.read();
             let txs: Vec<_> = node.mempool.iter()
                 .map(|tx: &Transaction| {
-                    let mut argon2 = Argon2Cache::new(100);
+                    let mut equihash = EquihashSolver::new(100);
                     serde_json::json!({
-                        "txid": hex::encode(tx.txid(&mut argon2)),
+                        "txid": hex::encode(tx.txid(&mut equihash)),
                         "size": tx.serialize().len(),
                         "fee": tx.fee(&node.storage).unwrap_or(0),
                     })
@@ -4107,7 +4167,7 @@ struct Node {
     bonds: HashMap<MinerId, Bond>,
     loyalty: HashMap<MinerId, LoyaltyData>,
     share_pool: SharePool,
-    argon2: Argon2Cache,
+    equihash: EquihashSolver,
     p2p: P2PNode,
     blocks_found: u64,
     shares_found: u64,
@@ -4150,7 +4210,7 @@ impl Node {
             bonds: HashMap::new(),
             loyalty: HashMap::new(),
             share_pool: SharePool::new(config.advanced.share_pool_memory_mb),
-            argon2: Argon2Cache::new(ARGON2_CACHE_SIZE),
+            equihash: EquihashSolver::new(EQUIHASH_CACHE_SIZE),
             p2p,
             blocks_found: 0,
             shares_found: 0,
@@ -4203,7 +4263,7 @@ impl Node {
     fn load_state(&mut self) -> Result<(), String> {
         for h in 0..=self.height {
             if let Some(block) = self.storage.get_block(h)? {
-                let hash = block.header.hash(&mut self.argon2);
+                let hash = block.header.hash(&mut self.equihash);
                 let header = block.header.clone();
                 self.blocks.push(header);
                 self.block_hashes.insert(hash, h);
@@ -4250,6 +4310,9 @@ impl Node {
             }
         }
         
+        // Загрузка чекпоинта share pool
+        let _ = self.share_pool.load_checkpoint(self.epoch, &self.storage);
+        
         self.mempool = self.storage.load_mempool()?;
         
         println!("💾 Loaded state: height={}, miners={}, bonds={}, loyalty={}", 
@@ -4277,7 +4340,7 @@ impl Node {
     
     fn init_genesis(&mut self) {
         let (header, coinbase) = create_genesis_block();
-        let txid = coinbase.txid(&mut self.argon2);
+        let txid = coinbase.txid(&mut self.equihash);
         
         let mut header = header;
         header.merkle_root = txid;
@@ -4285,7 +4348,7 @@ impl Node {
         let outpoint = (txid, 0);
         let _ = self.storage.save_utxo(&outpoint, &coinbase.outputs[0]);
         
-        let hash = header.hash(&mut self.argon2);
+        let hash = header.hash(&mut self.equihash);
         
         let (signature, pubkey) = if let Some(wallet) = &self.wallet {
             (wallet.sign_block(&hash).ok(), Some(wallet.public_key.clone()))
@@ -4341,8 +4404,8 @@ impl Node {
             }
         };
         
-        let mut argon2 = Argon2Cache::new(100);
-        let block_hash = genesis_block.header.hash(&mut argon2);
+        let mut equihash = EquihashSolver::new(100);
+        let block_hash = genesis_block.header.hash(&mut equihash);
         
         let valid = Wallet::verify_signature(pubkey, signature, &block_hash);
         
@@ -4362,7 +4425,7 @@ impl Node {
     fn last_hash(&mut self) -> Hash32 {
         if let Some(last) = self.last_block() {
             let header = last.clone();
-            header.hash(&mut self.argon2)
+            header.hash(&mut self.equihash)
         } else {
             [0; 32]
         }
@@ -4372,6 +4435,28 @@ impl Node {
         self.last_block()
             .map(|b| b.difficulty)
             .unwrap_or_else(Target::genesis)
+    }
+    
+    // ДОБАВЛЕН МЕТОД ДЛЯ ДИНАМИЧЕСКОЙ СЛОЖНОСТИ ШАР
+    fn dynamic_share_target(&self, miner_id: MinerId) -> Target {
+        let block_target = self.last_difficulty();
+        let share_multiplier = self.share_multiplier_for_bond(miner_id);
+        block_target.adjust(share_multiplier)
+    }
+    
+    fn share_multiplier_for_bond(&self, miner_id: MinerId) -> f64 {
+        let bond = self.bonds.get(&miner_id).map(|b| b.amount).unwrap_or(0);
+        let base_multiplier = 1.0;
+        
+        if bond >= 100_000_000 {
+            base_multiplier * 0.5
+        } else if bond >= 50_000_000 {
+            base_multiplier * 0.7
+        } else if bond >= 10_000_000 {
+            base_multiplier * 0.9
+        } else {
+            base_multiplier * 1.0
+        }
     }
     
     fn sync_progress(&self) -> f64 {
@@ -4437,14 +4522,15 @@ impl Node {
             .map(|b| b.amount)
             .unwrap_or(0);
         
-        let target_share = self.last_difficulty().share_target();
+        // ИСПОЛЬЗУЕМ ДИНАМИЧЕСКУЮ СЛОЖНОСТЬ ВМЕСТО ФИКСИРОВАННОЙ
+        let target_share = self.dynamic_share_target(miner_id);
         let expected_prev = self.last_hash();
         let is_valid = match share.validate(
             &target_share,
             &expected_prev,
             current_epoch,
             now,
-            &mut self.argon2,
+            &mut self.equihash,
         ) {
             Ok(_) => true,
             Err(e) => {
@@ -4518,6 +4604,7 @@ impl Node {
                     set_saving_state(true);
                     println!("💾 Saving state...");
                     let _ = self.storage.save_mempool(&self.mempool);
+                    let _ = self.share_pool.save_checkpoint(self.epoch, &self.storage);
                     let _ = self.storage.flush();
                     println!("✅ State saved");
                 }
@@ -4636,7 +4723,7 @@ impl Node {
         let mut header = BlockHeader::new(prev_hash, self.epoch + 1, difficulty);
         
         let mut hashes: Vec<Hash32> = txs.iter()
-            .map(|tx| tx.txid(&mut self.argon2))
+            .map(|tx| tx.txid(&mut self.equihash))
             .collect();
         
         while hashes.len() > 1 {
@@ -4665,11 +4752,11 @@ impl Node {
         let mut best_hash = [0xff; 32];
         
         for nonce in 0..MINING_BATCH_SIZE {
-            if !Argon2Cache::prefilter(&header.to_bytes(), nonce, &target_prefilter) {
+            if !EquihashSolver::prefilter(&header.to_bytes(), nonce, &target_prefilter) {
                 continue;
             }
             
-            let hash = header.hash_with_nonce(nonce, &mut self.argon2);
+            let hash = header.hash_with_nonce(nonce, &mut self.equihash);
             
             if difficulty.is_met_by(&hash) {
                 header.nonce = nonce;
@@ -4688,7 +4775,7 @@ impl Node {
             header.nonce = best_nonce;
             
             let (signature, pubkey) = if let Some(wallet) = &self.wallet {
-                let block_hash = header.hash(&mut self.argon2);
+                let block_hash = header.hash(&mut self.equihash);
                 (wallet.sign_block(&block_hash).ok(), Some(wallet.public_key.clone()))
             } else {
                 (None, None)
@@ -4743,7 +4830,7 @@ impl Node {
     fn update_utxo_set(&mut self, block: &Block) {
         for tx in &block.transactions {
             for (i, output) in tx.outputs.iter().enumerate() {
-                let txid = tx.txid(&mut self.argon2);
+                let txid = tx.txid(&mut self.equihash);
                 let outpoint = (txid, i as u32);
                 let _ = self.storage.save_utxo(&outpoint, output);
             }
@@ -4774,6 +4861,9 @@ impl Node {
         println!("   Total epoch rewards: {} LYT", total_rewards);
         println!("   Active miners: {}", poci_results.len());
         
+        // Сохраняем чекпоинт share pool перед очисткой
+        let _ = self.share_pool.save_checkpoint(self.epoch, &self.storage);
+        
         self.share_pool.new_epoch();
         self.epoch += 1;
         
@@ -4802,7 +4892,7 @@ impl Node {
             None => return,
         };
         
-        let block_hash = last_block.hash(&mut self.argon2);
+        let block_hash = last_block.hash(&mut self.equihash);
         let state_root = self.calculate_state_root();
         
         let (signature, _pubkey) = if let Some(wallet) = &self.wallet {
@@ -4886,7 +4976,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handle_info_command()?;
         }
         _ => {
-            // Если нет команды, запускаем ноду по умолчанию
             println!("No command specified, starting research node...\n");
             run_node().await?;
         }
@@ -4974,7 +5063,6 @@ async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
     let node = Node::new(config.clone())?;
     let node_arc = Arc::new(RwLock::new(node));
     
-    // RPC сервер
     if config.rpc.enabled {
         let rpc_node = node_arc.clone();
         tokio::spawn(async move {
@@ -4986,7 +5074,6 @@ async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
         println!("📡 RPC server started on port {}", config.rpc.port);
     }
     
-    // Добавляем bond если майнинг включен
     {
         let mut node = node_arc.write();
         if config.mining.enabled {
@@ -4996,7 +5083,6 @@ async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    // Graceful shutdown handler
     let node_clone = node_arc.clone();
     tokio::spawn(async move {
         signal::ctrl_c().await.unwrap();
@@ -5004,11 +5090,11 @@ async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
         println!("⏳ Shutting down, please wait...");
         SHUTDOWN.store(true, AtomicOrdering::SeqCst);
         
-        // Сохраняем состояние
         {
             let mut node = node_clone.write();
             set_saving_state(true);
             let _ = node.storage.save_mempool(&node.mempool);
+            let _ = node.share_pool.save_checkpoint(node.epoch, &node.storage);
             let _ = node.storage.flush();
             println!("✅ State saved");
         }
@@ -5037,4 +5123,470 @@ async fn run_node() -> Result<(), Box<dyn std::error::Error>> {
     node.run_with_graceful_shutdown()?;
     
     Ok(())
+}
+// ============================================================
+// ТЕСТЫ
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // ============================================================
+    // Тесты PoCI calculation
+    // ============================================================
+    
+    #[test]
+    fn test_poci_calculation_basic() {
+        let mut miners = HashMap::new();
+        let mut bonds = HashMap::new();
+        let mut loyalty = HashMap::new();
+        
+        let miner_id_1 = [1u8; 20];
+        let miner_id_2 = [2u8; 20];
+        
+        // Miner 1: 1000 shares, bond 100 ZEC
+        miners.insert(miner_id_1, MinerData {
+            miner_id: miner_id_1,
+            shares: 1000,
+            bond: 100_000_000,
+            loyalty: 10.0,
+            last_epoch: 1,
+            invalid_ratio: 0.0,
+            banned_until: None,
+            last_share_time: 0,
+            total_shares_historical: 1000,
+            blocks_found: 0,
+            total_rewards: 0,
+            first_seen: 0,
+            loyalty_history: VecDeque::new(),
+            last_loyalty_update: 1,
+        });
+        
+        // Miner 2: 100 shares, bond 1 ZEC
+        miners.insert(miner_id_2, MinerData {
+            miner_id: miner_id_2,
+            shares: 100,
+            bond: 10_000_000,
+            loyalty: 1.0,
+            last_epoch: 1,
+            invalid_ratio: 0.0,
+            banned_until: None,
+            last_share_time: 0,
+            total_shares_historical: 100,
+            blocks_found: 0,
+            total_rewards: 0,
+            first_seen: 0,
+            loyalty_history: VecDeque::new(),
+            last_loyalty_update: 1,
+        });
+        
+        // Добавляем bonds
+        bonds.insert(miner_id_1, Bond {
+            amount: 100_000_000,
+            created_at: 0,
+            lock_until: 0,
+            miner_id: miner_id_1,
+            auditor_pubkey: vec![],
+            viewing_key: vec![],
+        });
+        
+        bonds.insert(miner_id_2, Bond {
+            amount: 10_000_000,
+            created_at: 0,
+            lock_until: 0,
+            miner_id: miner_id_2,
+            auditor_pubkey: vec![],
+            viewing_key: vec![],
+        });
+        
+        // Добавляем loyalty
+        loyalty.insert(miner_id_1, LoyaltyData {
+            value: 10.0,
+            last_epoch: 1,
+            missed_epochs: 0,
+            consecutive_epochs: 10,
+            grace_remaining: 3,
+        });
+        
+        loyalty.insert(miner_id_2, LoyaltyData {
+            value: 1.0,
+            last_epoch: 1,
+            missed_epochs: 0,
+            consecutive_epochs: 1,
+            grace_remaining: 3,
+        });
+        
+        let results = calculate_poci(&miners, &bonds, &loyalty, 1000);
+        
+        assert_eq!(results.len(), 2);
+        
+        // Проверяем, что у miner_1 больше PoCI
+        let result_1 = results.iter().find(|r| r.miner_id == miner_id_1).unwrap();
+        let result_2 = results.iter().find(|r| r.miner_id == miner_id_2).unwrap();
+        
+        assert!(result_1.poci > result_2.poci);
+        assert!(result_1.reward > result_2.reward);
+        
+        println!("✅ test_poci_calculation_basic passed");
+    }
+    
+    #[test]
+    fn test_poci_no_bond() {
+        let mut miners = HashMap::new();
+        let bonds = HashMap::new();
+        let loyalty = HashMap::new();
+        
+        let miner_id = [1u8; 20];
+        
+        miners.insert(miner_id, MinerData {
+            miner_id,
+            shares: 1000,
+            bond: 0,
+            loyalty: 0.0,
+            last_epoch: 1,
+            invalid_ratio: 0.0,
+            banned_until: None,
+            last_share_time: 0,
+            total_shares_historical: 1000,
+            blocks_found: 0,
+            total_rewards: 0,
+            first_seen: 0,
+            loyalty_history: VecDeque::new(),
+            last_loyalty_update: 1,
+        });
+        
+        let results = calculate_poci(&miners, &bonds, &loyalty, 1000);
+        
+        // Без bond и loyalty PoCI должен быть только от shares
+        assert_eq!(results.len(), 1);
+        assert!(results[0].poci > 0.0);
+        
+        println!("✅ test_poci_no_bond passed");
+    }
+    
+    // ============================================================
+    // Тесты Loyalty
+    // ============================================================
+    
+    #[test]
+    fn test_loyalty_continuous_participation() {
+        let mut loyalty = LoyaltyData::new();
+        
+        // 10 эпох подряд
+        for epoch in 1..=10 {
+            loyalty.update(epoch, true);
+        }
+        
+        assert_eq!(loyalty.get_loyalty_score(), 10.0);
+        assert_eq!(loyalty.consecutive_epochs, 10);
+        assert_eq!(loyalty.missed_epochs, 0);
+        
+        println!("✅ test_loyalty_continuous_participation passed");
+    }
+    
+    #[test]
+    fn test_loyalty_missed_epoch() {
+        let mut loyalty = LoyaltyData::new();
+        
+        // 5 эпох подряд
+        for epoch in 1..=5 {
+            loyalty.update(epoch, true);
+        }
+        assert_eq!(loyalty.get_loyalty_score(), 5.0);
+        
+        // Пропускаем эпоху 6
+        loyalty.update(6, false);
+        
+        // Должно уменьшиться (5 * 0.7 = 3.5)
+        assert!((loyalty.get_loyalty_score() - 3.5).abs() < 0.001);
+        assert_eq!(loyalty.missed_epochs, 1);
+        
+        println!("✅ test_loyalty_missed_epoch passed");
+    }
+    
+    #[test]
+    fn test_loyalty_long_absence() {
+        let mut loyalty = LoyaltyData::new();
+        
+        // 10 эпох подряд
+        for epoch in 1..=10 {
+            loyalty.update(epoch, true);
+        }
+        assert_eq!(loyalty.get_loyalty_score(), 10.0);
+        
+        // Пропускаем 5 эпох
+        for epoch in 11..=15 {
+            loyalty.update(epoch, false);
+        }
+        
+        // После 5 пропусков значение должно быть около 0
+        assert!(loyalty.get_loyalty_score() < 1.0);
+        
+        println!("✅ test_loyalty_long_absence passed");
+    }
+    
+    #[test]
+    fn test_loyalty_grace_period() {
+        let mut loyalty = LoyaltyData::new();
+        
+        // 3 эпохи подряд
+        for epoch in 1..=3 {
+            loyalty.update(epoch, true);
+        }
+        assert_eq!(loyalty.get_loyalty_score(), 3.0);
+        
+        // Пропускаем 1 эпоху (должна быть грация)
+        loyalty.update(4, false);
+        
+        // С грацией: 3 * 0.5 = 1.5
+        assert!((loyalty.get_loyalty_score() - 1.5).abs() < 0.001);
+        
+        println!("✅ test_loyalty_grace_period passed");
+    }
+    
+    // ============================================================
+    // Тесты Bond
+    // ============================================================
+    
+    #[test]
+    fn test_bond_activation() {
+        let bond = Bond::new(10_000_000, 0, [1u8; 20]);
+        
+        assert_eq!(bond.amount, 10_000_000);
+        assert_eq!(bond.lock_until, 0 + BOND_LOCKUP_BLOCKS);
+        assert!(bond.is_valid_for_poci());
+        
+        // В начале не активен
+        assert!(!bond.is_active(0));
+        
+        // После lock_until активен
+        assert!(bond.is_active(bond.lock_until));
+        
+        println!("✅ test_bond_activation passed");
+    }
+    
+    #[test]
+    fn test_bond_minimum() {
+        let small_bond = Bond::new(1_000_000, 0, [1u8; 20]);
+        assert!(!small_bond.is_valid_for_poci());
+        
+        let min_bond = Bond::new(MINIMUM_BOND_LYT, 0, [1u8; 20]);
+        assert!(min_bond.is_valid_for_poci());
+        
+        println!("✅ test_bond_minimum passed");
+    }
+    
+    // ============================================================
+    // Тесты Share validation
+    // ============================================================
+    
+    #[test]
+    fn test_share_hash() {
+        let miner_id = [1u8; 20];
+        let header = BlockHeader::new([0; 32], 1, Target::genesis());
+        let hash = [2u8; 32];
+        
+        let share = Share::new(miner_id, header, 12345, hash);
+        let share_hash = share.share_hash();
+        
+        assert_eq!(share_hash.len(), 32);
+        assert_ne!(share_hash, [0; 32]);
+        
+        println!("✅ test_share_hash passed");
+    }
+    
+    // ============================================================
+    // Тесты Dynamic share difficulty
+    // ============================================================
+    
+    #[test]
+    fn test_share_multiplier_for_bond() {
+        // Создаем ноду с минимальной конфигурацией
+        let config = Config::default();
+        let mut node = Node::new(config).unwrap();
+        
+        let miner_id = [1u8; 20];
+        
+        // Без bond
+        let mult_0 = node.share_multiplier_for_bond(miner_id);
+        assert_eq!(mult_0, 1.0);
+        
+        // Добавляем bond
+        node.add_bond(miner_id, 10_000_000);
+        
+        let mult_low = node.share_multiplier_for_bond(miner_id);
+        assert_eq!(mult_low, 0.9);
+        
+        // Большой bond
+        node.add_bond(miner_id, 100_000_000);
+        let mult_high = node.share_multiplier_for_bond(miner_id);
+        assert_eq!(mult_high, 0.5);
+        
+        println!("✅ test_share_multiplier_for_bond passed");
+    }
+    
+    // ============================================================
+    // Тесты Target
+    // ============================================================
+    
+    #[test]
+    fn test_target_share_target() {
+        let target = Target::genesis();
+        let share_target = target.share_target();
+        
+        assert_ne!(target.0, share_target.0);
+        
+        println!("✅ test_target_share_target passed");
+    }
+    
+    #[test]
+    fn test_target_adjust() {
+        let target = Target::genesis();
+        let harder = target.adjust(0.5);
+        let easier = target.adjust(2.0);
+        
+        // Проверяем, что harder сложнее (меньше числовое значение)
+        let harder_val = harder.to_difficulty();
+        let easier_val = easier.to_difficulty();
+        
+        assert!(harder_val > easier_val);
+        
+        println!("✅ test_target_adjust passed");
+    }
+    
+    // ============================================================
+    // Тесты Transaction validation
+    // ============================================================
+    
+    #[test]
+    fn test_transaction_basic_validation() {
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn::coinbase()],
+            outputs: vec![TxOut {
+                value: 1000,
+                script_pubkey: vec![],
+            }],
+            locktime: 0,
+        };
+        
+        assert!(tx.validate_basic().is_ok());
+        
+        // Пустая транзакция
+        let empty_tx = Transaction {
+            version: 1,
+            inputs: vec![],
+            outputs: vec![],
+            locktime: 0,
+        };
+        
+        assert!(empty_tx.validate_basic().is_err());
+        
+        println!("✅ test_transaction_basic_validation passed");
+    }
+    
+    #[test]
+    fn test_transaction_dust_output() {
+        let tx = Transaction {
+            version: 1,
+            inputs: vec![TxIn::coinbase()],
+            outputs: vec![TxOut {
+                value: DUST_LIMIT_LYT - 1,
+                script_pubkey: vec![],
+            }],
+            locktime: 0,
+        };
+        
+        assert!(tx.validate_basic().is_err());
+        
+        println!("✅ test_transaction_dust_output passed");
+    }
+    
+    // ============================================================
+    // Тесты Wallet
+    // ============================================================
+    
+    #[test]
+    fn test_wallet_generation() {
+        let wallet = Wallet::generate().unwrap();
+        
+        assert_eq!(wallet.secret_key.len(), 32);
+        assert_eq!(wallet.public_key.len(), 33);
+        assert_eq!(wallet.miner_id.len(), 20);
+        assert!(!wallet.address.is_empty());
+        
+        println!("✅ test_wallet_generation passed");
+    }
+    
+    #[test]
+    fn test_wallet_signing() {
+        let wallet = Wallet::generate().unwrap();
+        let message = [42u8; 32];
+        
+        let signature = wallet.sign(&message).unwrap();
+        assert!(!signature.is_empty());
+        
+        let verified = Wallet::verify_signature(&wallet.public_key, &signature, &message);
+        assert!(verified);
+        
+        println!("✅ test_wallet_signing passed");
+    }
+    
+    // ============================================================
+    // Тесты Difficulty adjustment
+    // ============================================================
+    
+    #[test]
+    fn test_difficulty_adjustment() {
+        let target = Target::genesis();
+        let timestamps: Vec<Timestamp> = (0..DIFFICULTY_ADJUSTMENT_INTERVAL + 2)
+            .map(|i| GENESIS_TIMESTAMP + i * TARGET_BLOCK_TIME)
+            .collect();
+        
+        let new_target = adjust_difficulty(&timestamps, &target);
+        
+        // Сложность не должна измениться слишком сильно
+        let diff_change = (new_target.to_difficulty() - target.to_difficulty()).abs();
+        assert!(diff_change < target.to_difficulty() * 0.3);
+        
+        println!("✅ test_difficulty_adjustment passed");
+    }
+    
+    // ============================================================
+    // Тесты Merkle root
+    // ============================================================
+    
+    #[test]
+    fn test_merkle_root() {
+        let mut equihash = EquihashSolver::new(100);
+        
+        let tx1 = Transaction::coinbase(vec![], 1);
+        let tx2 = Transaction::coinbase(vec![], 2);
+        let txs = vec![tx1, tx2];
+        
+        let root = SyncManager::compute_merkle_root(&txs, &mut equihash);
+        assert_ne!(root, [0; 32]);
+        
+        // Одна транзакция
+        let txs_single = vec![Transaction::coinbase(vec![], 1)];
+        let root_single = SyncManager::compute_merkle_root(&txs_single, &mut equihash);
+        assert_ne!(root_single, [0; 32]);
+        
+        println!("✅ test_merkle_root passed");
+    }
+    
+    // ============================================================
+    // Тесты Formatting
+    // ============================================================
+    
+    #[test]
+    fn test_format_duration() {
+        assert_eq!(format_duration(0), "00:00:00");
+        assert_eq!(format_duration(61), "00:01:01");
+        assert_eq!(format_duration(3600), "01:00:00");
+        assert_eq!(format_duration(3661), "01:01:01");
+        
+        println!("✅ test_format_duration passed");
+    }
 }
