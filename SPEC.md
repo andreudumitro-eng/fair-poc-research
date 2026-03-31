@@ -8,6 +8,8 @@ Date: March 2026
 Table of Contents
 Introduction
 
+Research Context & Relationship with Zcash
+
 Cryptographic Parameters
 
 Block Structure
@@ -49,16 +51,75 @@ Bond	20%	Economic commitment via locked collateral
 Key Research Innovation
 Peaceful coexistence of ASIC, GPU, and CPU miners — F-PoC enables all miner types to participate profitably in the same network. ASICs retain their efficiency advantage, but smaller miners receive regular, predictable rewards, eliminating the "lottery problem" that currently excludes CPU/GPU miners from Zcash.
 
+Research Context & Relationship with Zcash
+What This Prototype Is
+This is an open research platform for studying alternative reward distribution models in ASIC-resistant PoW networks. The codebase is a working implementation of F-PoC, designed to enable:
+
+Simulation and analysis of reward variance reduction
+
+Testing of loyalty and bonding mechanisms
+
+Evaluation of ASIC/CPU coexistence conditions
+
+Benchmarking of memory-hard PoW functions
+
+Relationship with Zcash's Equihash
+This prototype uses Argon2id as the Proof-of-Work function. This is a deliberate research design choice, not a proposal to replace Zcash's Equihash.
+
+Aspect	Current Prototype	Zcash Mainnet
+PoW Function	Argon2id (256 MB)	Equihash (n=200, k=9)
+Purpose	Research placeholder	Production consensus
+Why Argon2id for the Research Phase:
+
+Reason	Explanation
+Simplicity	Argon2id has a simpler API, allowing focus on F-PoC logic
+Memory-hardness	Both Argon2id and Equihash are memory-hard; ASIC resistance principles transfer
+Performance	Easier to benchmark and simulate on commodity hardware
+Standardization	Argon2id is RFC 9106 standard, well-documented
+Key Insight: The F-PoC reward distribution mechanism — epoch-based proportional rewards, square-root normalization, loyalty accumulation, bonding with slashing — is independent of the underlying PoW function. Results obtained with Argon2id are transferable to Equihash.
+
+Future Work: Equihash Adaptation
+Phase 4 of this research (planned for Q3-Q4 2026) will:
+
+Replace Argon2id with Equihash in the consensus layer
+
+Benchmark Equihash vs Argon2id for ASIC resistance
+
+Provide migration recommendations for the Zcash community
+
+What This Research Delivers to Zcash
+Deliverable	Value to Zcash
+Working F-PoC implementation	Ready-to-study codebase
+Variance reduction analysis	Data on reward predictability
+Loyalty mechanism evaluation	Understanding of long-term incentives
+Bond/slashing security model	Economic alignment framework
+Equihash adaptation roadmap	Clear path for integration
 Cryptographic Parameters
-Proof-of-Work Function: Argon2id
+Proof-of-Work Function: Argon2id (Research Placeholder)
 Parameter	Value	Rationale
-Memory	256 MiB	ASIC development cost >$50,000 per chip
+Memory	256 MiB	Demonstrates memory-hardness principles
 Iterations	2	Balance: ~100ms on modern CPU
 Parallelism	4	Optimal for 4-8 core CPUs
 Version	0x13	Argon2id (hybrid)
 Hash output	256 bits	Full entropy for difficulty
-Why Argon2id for Research?
-This research uses Argon2id as a proxy for memory-hard PoW functions. Future phases will adapt F-PoC to work with Zcash's Equihash.
+Research Note on PoW Function Choice
+This research uses Argon2id as a proxy for memory-hard PoW functions. The core F-PoC innovations (epoch-based proportional distribution, square-root normalization, loyalty, bonding) are independent of the specific PoW function.
+
+F-PoC Component	Dependence on PoW Function
+Epoch-based distribution	None — applies to any PoW
+Square-root normalization	None — applies to any share-based system
+Loyalty mechanism	None — only tracks participation
+Bond and slashing	None — independent of hashing
+Share validation	Yes — requires function to validate shares
+Conclusion: Results from Argon2id simulations are directly applicable to Equihash. The reward distribution logic remains unchanged.
+
+Target Equihash Parameters (for Future Adaptation)
+Parameter	Value	Description
+n	200	Collision bit length
+k	9	Number of solutions per hash
+Memory	~2 GB	Required for Equihash solver
+Current Zcash version	200,9	Active mainnet parameters
+Phase 4 of this research will adapt F-PoC to these parameters.
 
 Performance Benchmarks
 Hardware	Time/Hash	Throughput	Relative to CPU
@@ -68,6 +129,13 @@ GPU (RTX 3090)	~45 ms	22 H/s	2.4×
 Hypothetical Argon2 ASIC	~5 ms	200 H/s	~20×
 Key Insight: Even with hypothetical ASICs, the advantage is limited to ~20× (compared to 1000×+ for SHA256). This makes peaceful coexistence feasible.
 
+Why Not Other Functions?
+Alternative	Problem
+SHA256	Vulnerable to ASIC (Bitcoin-style)
+RandomX	Harder to implement, less standardized
+scrypt	Less memory (32 KB), more vulnerable to ASIC
+Balloon	Slower than Argon2id
+Equihash	Will be implemented in Phase 4
 Block Structure
 Block Header (120 bytes, little-endian)
 Field	Type	Size	Description
@@ -320,12 +388,12 @@ locktime	uint32	Block/time lock
 TxIn (Input)
 Field	Type	Description
 prev_txid	[32]byte	Hash of previous transaction
-prev_index	uint32	Output index
+prev_index	u32	Output index
 scriptSig	VarBytes	Unlocking script (signature + pubkey)
-sequence	uint32	For relative timelocks
+sequence	u32	For relative timelocks
 TxOut (Output)
 Field	Type	Description
-value	uint64	Amount
+value	u64	Amount
 scriptPubKey	VarBytes	Locking script
 Supported Script Types
 Script	Description
@@ -582,6 +650,13 @@ All miners receive rewards every 24 hours
 
 Predictable income stream for all participants
 
+Appendix D: Research Roadmap
+Phase	Period	Description
+Phase 1	Q1 2026	Theoretical analysis (completed)
+Phase 2	Q2 2026	Prototype implementation (70% complete)
+Phase 3	Q3 2026	Simulation & benchmarking
+Phase 4	Q3-Q4 2026	Equihash adaptation
+Phase 5	Q4 2026	Analysis & publication
 Document Version: 1.0 (Research Prototype)
 Last Updated: March 2026
 Research Lead: Andrii Dumitro
