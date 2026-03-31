@@ -1,4 +1,3 @@
-# fair-poc-research
 F-PoC Research Prototype
 Fair Proof-of-Contribution: An Alternative Reward Distribution Model for ASIC-Resistant PoW Networks
 
@@ -88,6 +87,44 @@ Pool Centralization	Severe (top 3 pools >50%)	Need for variance reduction
 Solo Mining Viability	Effectively zero	Need for regular, predictable rewards
 Long-term Incentives	None	Need for loyalty and bonding mechanisms
 ASIC vs. Small Miners	ASICs dominate	Need for peaceful coexistence
+Research Context & Relationship with Zcash
+What This Prototype Is
+This is an open research platform for studying alternative reward distribution models in ASIC-resistant PoW networks. The codebase is a working implementation of F-PoC, designed to enable:
+
+Simulation and analysis of reward variance reduction
+
+Testing of loyalty and bonding mechanisms
+
+Evaluation of ASIC/CPU coexistence conditions
+
+Benchmarking of memory-hard PoW functions
+
+Why Argon2id (Not Equihash)?
+This research prototype uses Argon2id as the Proof-of-Work function. This is a deliberate research design choice, not a proposal to replace Zcash's Equihash.
+
+Reason	Explanation
+Simplicity	Argon2id has a simpler API, allowing focus on F-PoC logic
+Memory-hardness	Both Argon2id and Equihash are memory-hard; ASIC resistance principles transfer
+Performance	Easier to benchmark and simulate on commodity hardware
+Standardization	Argon2id is RFC 9106 standard, well-documented
+Key Insight: The F-PoC reward distribution mechanism — epoch-based proportional rewards, square-root normalization, loyalty accumulation, bonding with slashing — is independent of the underlying PoW function. Results obtained with Argon2id are transferable to Equihash.
+
+Future Work: Equihash Adaptation
+Phase 4 of this research (Q3-Q4 2026) will:
+
+Replace Argon2id with Equihash in the consensus layer
+
+Benchmark Equihash vs Argon2id for ASIC resistance
+
+Provide migration recommendations for the Zcash community
+
+What This Research Delivers to Zcash
+Deliverable	Value to Zcash
+Working F-PoC implementation	Ready-to-study codebase
+Variance reduction analysis	Data on reward predictability
+Loyalty mechanism evaluation	Understanding of long-term incentives
+Bond/slashing security model	Economic alignment framework
+Equihash adaptation roadmap	Clear path for integration
 The Solution: Fair Proof-of-Contribution (F-PoC)
 Core Principle: Redefining Reward Distribution
 Traditional PoW follows a winner-takes-all model:
@@ -328,6 +365,8 @@ Benchmark Equihash vs Argon2id for ASIC resistance
 
 Provide migration path for Zcash community
 
+*Note: This phase explicitly addresses the transition from Argon2id (research placeholder) to Equihash (Zcash's native PoW). The core F-PoC logic remains unchanged.*
+
 Phase 5: Analysis & Publication (Q4 2026)
 Comparative analysis of reward distribution models
 
@@ -402,6 +441,10 @@ RocksDB team
 
 Tokio async runtime
 
+Citation
+If you use this research in your work, please cite:
+
+bibtex
 @misc{fpoc2026,
   author = {Dumitro, Andrii},
   title = {F-PoC: Fair Proof-of-Contribution for ASIC-Resistant PoW Networks},
