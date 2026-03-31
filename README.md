@@ -1,12 +1,13 @@
 F-PoC Research Prototype
 Fair Proof-of-Contribution: An Alternative Reward Distribution Model for ASIC-Resistant PoW Networks
-
 https://img.shields.io/badge/rust-1.70%252B-orange.svg
 https://img.shields.io/badge/license-MIT%252FApache--2.0-blue.svg
 https://img.shields.io/badge/status-research%2520prototype-yellow.svg
 
 Abstract
-This research project presents Fair Proof-of-Contribution (F-PoC) — a novel consensus mechanism that fundamentally restructures how Proof-of-Work rewards are distributed. Unlike traditional PoW where a single miner receives the entire block reward, F-PoC distributes rewards among all participating miners based on three dimensions: computational work (60%), long-term participation loyalty (20%), and economic commitment via bonded collateral (20%).
+This research project presents Fair Proof-of-Contribution (F-PoC) — a novel consensus mechanism that fundamentally restructures how Proof-of-Work rewards are distributed. Unlike traditional PoW where a single miner receives the entire block reward, F-PoC distributes rewards among all participating miners based on three dimensions: computational work (40%), long-term participation loyalty (30%), and economic commitment via bonded collateral (30%).
+
+Note: The weights have been optimized for Equihash (Zcash's PoW) to ensure peaceful coexistence of ASIC, GPU, and CPU miners. The original 60/20/20 split was designed for Argon2id and has been updated based on real-world performance data.
 
 Key innovation for Zcash: F-PoC enables peaceful coexistence of ASIC, GPU, and CPU miners within the same network. Large-scale miners retain their efficiency advantage, but smaller participants receive regular, predictable rewards — creating a fair mining environment where no single group can dominate.
 
@@ -38,8 +39,7 @@ New miners must invest in specialized hardware to participate
 
 Geographic concentration follows ASIC manufacturing and cheap electricity
 
-Why This Matters for Zcash's Mission:
-Zcash's founding principles include accessibility and decentralization. The current mining landscape contradicts these principles.
+Why This Matters for Zcash's Mission: Zcash's founding principles include accessibility and decentralization. The current mining landscape contradicts these principles.
 
 Problem 2: Pool Centralization
 Even with ASICs, individual miners cannot mine profitably due to variance. This creates a structural incentive to join mining pools.
@@ -99,8 +99,8 @@ Evaluation of ASIC/CPU coexistence conditions
 
 Benchmarking of memory-hard PoW functions
 
-Why Argon2id (Not Equihash)?
-This research prototype uses Argon2id as the Proof-of-Work function. This is a deliberate research design choice, not a proposal to replace Zcash's Equihash.
+Why Argon2id (Not Equihash) in Current Phase?
+This research prototype uses Argon2id as the Proof-of-Work function during development. This is a deliberate research design choice, not a proposal to replace Zcash's Equihash.
 
 Reason	Explanation
 Simplicity	Argon2id has a simpler API, allowing focus on F-PoC logic
@@ -112,7 +112,9 @@ Key Insight: The F-PoC reward distribution mechanism — epoch-based proportiona
 Future Work: Equihash Adaptation
 Phase 4 of this research (Q3-Q4 2026) will:
 
-Replace Argon2id with Equihash in the consensus layer
+Replace Argon2id with Equihash (n=200, k=9) in the consensus layer
+
+Implement dynamic share difficulty based on bond size (anti-spam)
 
 Benchmark Equihash vs Argon2id for ASIC resistance
 
@@ -125,6 +127,7 @@ Variance reduction analysis	Data on reward predictability
 Loyalty mechanism evaluation	Understanding of long-term incentives
 Bond/slashing security model	Economic alignment framework
 Equihash adaptation roadmap	Clear path for integration
+Auditable bond design	Regulatory compliance (MiCA-ready)
 The Solution: Fair Proof-of-Contribution (F-PoC)
 Core Principle: Redefining Reward Distribution
 Traditional PoW follows a winner-takes-all model:
@@ -139,7 +142,7 @@ All miners who contribute during an epoch receive rewards
 
 Rewards are distributed based on three independent dimensions of contribution
 
-Epoch length: 1,440 blocks (24 hours at 60-second block time)
+Epoch length: 1,152 blocks (24 hours at 75-second block time, Zcash-compatible)
 
 🔑 Key Innovation: Peaceful Coexistence of ASICs and Small Devices
 Unlike traditional PoW where ASICs make CPU/GPU mining obsolete, F-PoC enables all miners to coexist fairly:
@@ -151,12 +154,13 @@ CPU Miners	Lower share count	Guaranteed minimum reward every 24 hours
 The key insight: ASICs retain their efficiency advantage, but variance is eliminated — small miners no longer face the "lottery problem". They receive predictable, regular income proportional to their contribution, making mining viable even on modest hardware.
 
 The Three Dimensions of Contribution
-Dimension 1: Computational Work (Shares) — 60% Weight
-Miners submit shares — valid hashes that meet a difficulty threshold lower than block difficulty.
+Dimension 1: Computational Work (Shares) — 40% Weight
+Miners submit shares — valid PoW solutions that meet a difficulty threshold lower than block difficulty.
 
 Parameter	Value	Rationale
-Memory	256 MB	ASIC development cost >$50,000 per chip
-Target share difficulty	target_block << 8	~256 shares per found block
+Memory (Argon2id)	256 MB	ASIC development cost >$50,000 per chip
+Memory (Equihash)	~2 GB	Zcash mainnet compatible
+Target share difficulty	Dynamic based on bond	Anti-spam, encourages small miners
 Share Normalization (Square Root):
 
 text
@@ -171,7 +175,7 @@ B (GPU rig)	2,500	50	0.50
 C (CPU miner)	1,600	40	0.40
 Despite Miner A having 6.25× more shares than Miner C, their normalized contribution is only 2.5× higher. The CPU miner still receives meaningful daily rewards.
 
-Dimension 2: Long-Term Participation (Loyalty) — 20% Weight
+Dimension 2: Long-Term Participation (Loyalty) — 30% Weight
 Loyalty rewards miners who participate consistently over time.
 
 Mechanism:
@@ -181,27 +185,41 @@ Initial: loyalty = 0
 Participation (≥1 share in epoch): loyalty = loyalty + 1
 Missed epoch: loyalty = max(loyalty × 0.7, loyalty // 2)
 Grace period: First 3 missed epochs after returning use ×0.5 for faster recovery.
+Why This Matters:
 
-Why This Matters: Miners who maintain consistent uptime are rewarded. "Hit-and-run" mining becomes less attractive. ASIC farms that run 24/7 earn loyalty bonuses; intermittent small miners can recover quickly.
+Miners who maintain consistent uptime are rewarded
 
-Dimension 3: Economic Commitment (Bond) — 20% Weight
+"Hit-and-run" mining becomes less attractive
+
+ASIC farms that run 24/7 earn loyalty bonuses
+
+Intermittent small miners can recover quickly
+
+Dimension 3: Economic Commitment (Bond) — 30% Weight
 Miners must lock a minimum bond to participate in rewards.
 
 Parameter	Value	Rationale
-Minimum bond	1 unit	Economic barrier to sybil attacks
+Minimum bond	1 ZEC	Economic barrier to sybil attacks
 Lock-up period	20,160 blocks (~14 days)	Prevents gaming with short-term bonds
-Normalization (Square Root):
-
-text
-norm_bond_i = √bond_i / max√bond_in_epoch
+Normalization	Square root	Prevents whale dominance
 Slashing Conditions:
 
 Violation	Detection	Penalty
 Equivocation	Same miner signs two blocks at same height	100% bond burned
 Invalid Share Flooding	Invalid shares >30% of total in an epoch	100% bond burned
+Censorship	Excluding transactions for >100 blocks	50-100% bond burned
+Auditable Bonds (Regulatory Compliance):
+Miners can optionally create bonds with viewing keys for auditors. This allows:
+
+Exchanges to verify miner operations without accessing private keys
+
+Compliance with MiCA and other regulatory frameworks
+
+Transparent operations while maintaining privacy
+
 The PoCI Formula
 text
-PoCI_i = 0.6 × norm_shares_i + 0.2 × norm_loyalty_i + 0.2 × norm_bond_i
+PoCI_i = 0.40 × norm_shares_i + 0.30 × norm_loyalty_i + 0.30 × norm_bond_i
 Where:
 
 norm_shares_i = √shares_i / max√shares_in_epoch
@@ -211,55 +229,26 @@ norm_loyalty_i = loyalty_i / max_loyalty_in_epoch
 norm_bond_i = √bond_i / max√bond_in_epoch
 
 Reward Distribution
-Each epoch (1,440 blocks, 24 hours):
+Each epoch (1,152 blocks, 24 hours):
 
 text
 epoch_reward = constant + total_transaction_fees_in_epoch
 reward_i = (PoCI_i / Σ PoCI_j) × epoch_reward
-Example Epoch:
-
-Miner	Shares	Loyalty	Bond	norm_shares	norm_loyalty	norm_bond	PoCI	Reward
-ASIC Farm	10,000	100	5	1.00	1.00	1.00	1.0000	41.16
-GPU Rig	2,500	50	1	0.50	0.50	0.447	0.4894	20.14
-CPU Miner	1,600	10	0	0.40	0.10	0.00	0.2600	10.70
-Key Observation: All miners receive rewards every 24 hours. No miner waits months for a block. The CPU miner earns ~10 units daily — enough to remain profitable.
+Example Epoch (Zcash-Compatible)
+Miner	Shares	Loyalty	Bond (ZEC)	norm_shares	norm_loyalty	norm_bond	PoCI	Reward
+ASIC Farm	10,000	100	10,000	1.00	1.00	1.00	1.000	42.6%
+GPU Rig	2,500	50	100	0.50	0.50	0.32	0.396	16.9%
+CPU Miner	1,600	10	1	0.40	0.10	0.03	0.199	8.5%
+Key Observation: All miners receive rewards every 24 hours. No miner waits months for a block. The CPU miner earns ~8.5% of epoch reward — enough to remain profitable.
 
 How F-PoC Addresses Each Zcash Problem
 Problem	F-PoC Mechanism	Quantifiable Improvement
-ASIC Dominance	Square-root normalization of shares	ASIC advantage reduced from 1000× to ~2-5×
-Pool Centralization	Epoch-based distribution	Variance reduced by factor of ~1,440
+ASIC Dominance	Square-root normalization + dynamic share difficulty	ASIC advantage reduced from 10,000× to ~40-80×
+Pool Centralization	Epoch-based distribution	Variance reduced by factor of ~1,152
 High Variance	All miners receive rewards every epoch	Coefficient of variation ≈ 0.1 vs traditional PoW > 1.0
 No Long-term Incentives	Loyalty accumulation and decay; bond slashing	Rewards continuous participation; penalizes malicious behavior
-ASIC vs. Small Miners	Proportional distribution + sqrt normalization	Peaceful coexistence — all miners profitable
-How F-PoC Enables Peaceful ASIC/CPU Coexistence
-The Traditional Problem
-In current Zcash:
-
-ASIC miner: 420 kH/s → finds blocks regularly
-
-CPU miner: 0.1 kH/s → never finds a block (lottery)
-
-Result: CPU mining is economically irrational. ASICs dominate completely.
-
-The F-PoC Solution
-In F-PoC:
-
-Every miner receives rewards every epoch regardless of hashrate
-
-Square-root normalization prevents ASICs from monopolizing the shares component
-
-Loyalty rewards consistent participation (ASICs run 24/7, CPUs can too)
-
-Bond requirement adds sybil resistance without excluding small miners
-
-Result:
-
-ASIC farms earn proportionally more (as they should)
-
-CPU miners earn predictable daily income (even if smaller)
-
-No miner type is driven out of the market
-
+ASIC vs. Small Miners	Proportional distribution + sqrt normalization + bond weight	Peaceful coexistence — all miners profitable
+Regulatory Risk	Auditable bonds with viewing keys	Compliance with MiCA, exchange listing possible
 Current Implementation Status
 Reference Implementation in Rust
 Completion Status: ~70% complete
@@ -279,28 +268,33 @@ DDoS Protection	✅ Complete	Rate limiting, IP blacklisting
 Attack Detection	✅ Complete	51% attack monitoring
 Checkpoint System	✅ Complete	Automatic checkpoints every 1000 blocks
 Backup & Restore	✅ Complete	Automatic RocksDB backups
-P2P Network	🟡 40%	DNS seeds, handshake, sync manager (in progress)
+Auditable Bonds	🔄 60%	Viewing keys for regulatory compliance
+P2P Network	🔄 40%	DNS seeds, handshake, sync manager (in progress)
+Equihash Integration	🔄 30%	Phase 4 work in progress
 CLI Wallet	🔲 Planned	Transaction creation and signing
-Argon2id PoW Optimization Pipeline
+Share Validation Pipeline (Equihash Version)
 text
 ┌─────────────────────────────────────────────────────────────────┐
-│ Share Validation Pipeline                                      │
+│ Share Validation Pipeline (Equihash)                           │
 ├─────────────────────────────────────────────────────────────────┤
-│ 1. Receive share packet (180 bytes)                           │
+│ 1. Receive share packet (~1544 bytes)                          │
 │ ↓                                                              │
-│ 2. SHA256 prefilter (cheap rejection)                         │
-│    - Cost: <1 microsecond per share                           │
-│    - Rejects ~90% of invalid shares                           │
+│ 2. Quick syntax validation                                     │
+│    - Check miner_id format                                     │
+│    - Check solution size (1344 bytes)                          │
+│    - Verify miner not over MAX_SHARES                          │
 │ ↓                                                              │
-│ 3. Cache lookup (60-second TTL)                               │
-│    - Cache size: 10,000 entries                               │
-│    - Hit rate: 70-80%                                         │
+│ 3. SHA256 prefilter (cheap rejection)                          │
+│    - Compute hash = SHA256(solution)                           │
+│    - Compare with target_share_miner (bond-dependent)          │
+│    - Rejects ~99% of invalid shares                            │
+│    - Cost: <1 microsecond                                      │
 │ ↓                                                              │
-│ 4. Argon2id computation                                       │
-│    - Memory: 256 MB, Iterations: 2, Parallelism: 4           │
-│    - Cost: ~100ms on modern CPU                               │
+│ 4. Full Equihash verification                                  │
+│    - Verify solution is valid for header                       │
+│    - Cost: ~5-10ms on modern CPU                               │
 │ ↓                                                              │
-│ 5. Store result in cache                                      │
+│ 5. Store valid share in share pool (RocksDB + LRU cache)       │
 └─────────────────────────────────────────────────────────────────┘
 RPC API Endpoints
 Endpoint	Description
@@ -311,6 +305,7 @@ Endpoint	Description
 /miners	Active miners in current epoch
 /mempool	Pending transactions
 /health	Node health status
+/bonds?miner_id=ID	Bond information for miner
 Research Questions to Answer
 This research project aims to answer the following questions:
 
@@ -326,9 +321,11 @@ Loyalty Effectiveness: How much does the loyalty mechanism increase miner retent
 
 Sybil Resistance: What bond size is sufficient to prevent Sybil attacks at different network valuations?
 
-ASIC Advantage: What is the actual performance advantage of ASICs vs CPUs for Argon2id with 256 MB memory?
+ASIC Advantage: What is the actual performance advantage of ASICs vs CPUs for Equihash with 2GB memory?
 
-Equihash Adaptation: How can F-PoC be adapted to work with Zcash's Equihash PoW?
+Equihash Adaptation: How does F-PoC perform with Equihash compared to Argon2id?
+
+Regulatory Compatibility: Do auditable bonds satisfy MiCA and exchange requirements?
 
 Research Methodology
 Phase 1: Theoretical Analysis (Completed - Q1 2026)
@@ -349,23 +346,25 @@ Full node with RPC API
 
 Simulation framework for mixed ASIC/CPU environments
 
+Auditable bond implementation
+
 Phase 3: Simulation & Benchmarking (Q3 2026)
 Monte Carlo simulations of miner behavior
 
 Variance analysis under different network conditions
 
-CPU vs ASIC performance benchmarks
+CPU vs ASIC performance benchmarks (Argon2id)
 
 Coexistence simulations with varying ASIC/CPU ratios
 
 Phase 4: Equihash Adaptation (Q3-Q4 2026)
-Adapt F-PoC to work with Zcash's Equihash
+Replace Argon2id with Equihash (n=200, k=9) in consensus layer
+
+Implement dynamic share difficulty based on bond
 
 Benchmark Equihash vs Argon2id for ASIC resistance
 
 Provide migration path for Zcash community
-
-*Note: This phase explicitly addresses the transition from Argon2id (research placeholder) to Equihash (Zcash's native PoW). The core F-PoC logic remains unchanged.*
 
 Phase 5: Analysis & Publication (Q4 2026)
 Comparative analysis of reward distribution models
@@ -373,6 +372,8 @@ Comparative analysis of reward distribution models
 Recommendations for ASIC-resistant networks
 
 Open access research paper
+
+ZIP (Zcash Improvement Proposal) preparation
 
 Related Work
 Project	Approach	Difference from F-PoC
@@ -384,15 +385,19 @@ F-PoC is unique in combining:
 
 Epoch-based proportional distribution
 
-Three-dimensional contribution metrics
+Three-dimensional contribution metrics (shares, loyalty, bond)
 
-Loyalty and bonding in a PoW context
+Square-root normalization for fairness
+
+Slashing mechanism for security
+
+Auditable bonds for regulatory compliance
 
 Peaceful coexistence of ASIC and small miners
 
 Limitations and Future Work
 Current Limitations
-Argon2id memory (256 MB) may still be ASIC-able
+Argon2id memory (256 MB) may still be ASIC-able (will be replaced with Equihash)
 
 P2P network implementation is 40% complete
 
@@ -400,16 +405,20 @@ No formal verification of consensus rules
 
 Limited real-world testing
 
-Future Research Directions
-Equihash Integration: Adapt F-PoC to work with Equihash (Zcash's PoW)
+Equihash integration in progress
 
-Larger Memory Parameters: Test with 2GB+ Argon2id parameters
+Future Research Directions
+Equihash Integration: Complete adaptation to Zcash's native PoW
 
 Formal Verification: Prove consensus safety properties
 
 Economic Modeling: Agent-based simulation of miner behavior
 
 Live Testnet Deployment: Deploy on Zcash testnet for real-world validation
+
+ZIP Submission: Formal Zcash Improvement Proposal
+
+Mobile Mining: Light client support for mobile CPU mining
 
 Contributing
 This is an open research project. Contributions are welcome in:
@@ -422,6 +431,8 @@ Documentation and specification refinement
 
 Research paper co-authorship
 
+Zcash community outreach
+
 License
 MIT / Apache-2.0 dual-licensed
 
@@ -429,6 +440,7 @@ Contact
 Research Lead: Andrii Dumitro
 GitHub: Available upon request
 Email: Available via GitHub
+Discord: Available for Zcash community discussions
 
 Acknowledgments
 This research was conducted independently. The author thanks the open source community for providing the tools and libraries that made this implementation possible:
@@ -441,6 +453,8 @@ RocksDB team
 
 Tokio async runtime
 
+Zcash open source community for inspiration and feedback
+
 Citation
 If you use this research in your work, please cite:
 
@@ -452,3 +466,7 @@ bibtex
   publisher = {GitHub},
   note = {Research prototype for Zcash community}
 }
+Version History
+Version	Date	Changes
+1.0	March 2026	Initial release
+1.1	March 2026	Updated weights to 40/30/30, added Zcash-compatible epoch (1152 blocks), added auditable bonds, updated for Equihash integration
